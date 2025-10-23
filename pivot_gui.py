@@ -1,9 +1,10 @@
-"""Aplicación de escritorio para transformar columnas de un Excel mediante pivotaje.
+"""Aplicación de escritorio para pivotar columnas de un archivo Excel.
 
 Requisitos de paquetes:
 - pandas
-- openpyxl (motor de pandas para escribir/leer archivos .xlsx)
+- openpyxl (motor de pandas para manejar archivos .xlsx)
 - tkinter (incluido en la biblioteca estándar de Python en la mayoría de las distribuciones)
+- os (para gestionar rutas de archivo)
 """
 
 from __future__ import annotations
@@ -11,7 +12,7 @@ from __future__ import annotations
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Dict
+from typing import Dict, List, Tuple
 
 import pandas as pd
 
@@ -26,8 +27,7 @@ class ScrollableCheckboxFrame(ttk.Frame):
         self.inner = ttk.Frame(canvas)
 
         self.inner.bind(
-            "<Configure>",
-            lambda event: canvas.configure(scrollregion=canvas.bbox("all")),
+            "<Configure>", lambda event: canvas.configure(scrollregion=canvas.bbox("all"))
         )
         canvas.create_window((0, 0), window=self.inner, anchor="nw")
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -42,7 +42,7 @@ class PivotApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("Pivotador de columnas")
-        self.geometry("700x600")
+        self.geometry("780x620")
 
         # DataFrame cargado desde el archivo Excel seleccionado.
         self.dataframe: pd.DataFrame | None = None
@@ -52,6 +52,10 @@ class PivotApp(tk.Tk):
         self.fixed_vars: Dict[str, tk.BooleanVar] = {}
         self.pivot_vars: Dict[str, tk.BooleanVar] = {}
 
+        # Variables y menús desplegables para los emparejamientos entre columnas pivotables.
+        self.pair_vars: Dict[str, tk.StringVar] = {}
+        self.pair_menus: Dict[str, tk.OptionMenu] = {}
+
         self._build_widgets()
 
     def _build_widgets(self) -> None:
@@ -59,15 +63,16 @@ class PivotApp(tk.Tk):
 
         instructions = (
             "1. Seleccione un archivo Excel (.xlsx).\n"
-            "2. Elija qué columnas permanecerán fijas y cuáles se pivotarán.\n"
-            "3. Pulse \"Generar archivo\" para guardar el resultado."
+            "2. Marque las columnas que quedarán fijas y las que se pivotarán.\n"
+            "   Puede emparejar columnas pivotables con el menú desplegable correspondiente.\n"
+            "3. Pulse \"Transformar y Guardar\" para generar el archivo resultado.xlsx."
         )
         ttk.Label(self, text=instructions, justify="left").pack(
             anchor="w", padx=10, pady=(10, 5)
         )
 
         select_button = ttk.Button(
-            self, text="Seleccionar archivo Excel", command=self.load_excel
+            self, text="Cargar archivo Excel", command=self.load_excel
         )
         select_button.pack(padx=10, pady=5, anchor="w")
 
@@ -80,7 +85,7 @@ class PivotApp(tk.Tk):
         fixed_frame = ttk.Labelframe(container, text="Columnas fijas")
         fixed_frame.pack(side="left", fill="both", expand=True, padx=(0, 5))
 
-        pivot_frame = ttk.Labelframe(container, text="Columnas a pivotar")
+        pivot_frame = ttk.Labelframe(container, text="Columnas pivotables y emparejamientos")
         pivot_frame.pack(side="left", fill="both", expand=True, padx=(5, 0))
 
         self.fixed_checkbox_frame = ScrollableCheckboxFrame(fixed_frame)
@@ -91,7 +96,7 @@ class PivotApp(tk.Tk):
 
         generate_button = ttk.Button(
             self,
-            text="Generar archivo",
+            text="Transformar y Guardar",
             command=self.generate_pivoted_file,
         )
         generate_button.pack(pady=10)
@@ -132,7 +137,7 @@ class PivotApp(tk.Tk):
 
         self._populate_checkboxes(list(dataframe.columns))
 
-    def _populate_checkboxes(self, columns: list[str]) -> None:
+    def _populate_checkboxes(self, columns: List[str]) -> None:
         """Crea un checkbox por columna para los apartados de fijas y pivotables."""
 
         # Limpiar cualquier selección previa eliminando los widgets.
@@ -143,23 +148,159 @@ class PivotApp(tk.Tk):
 
         self.fixed_vars.clear()
         self.pivot_vars.clear()
+        self.pair_vars.clear()
+        self.pair_menus.clear()
 
         for column in columns:
             fixed_var = tk.BooleanVar(value=False)
-            pivot_var = tk.BooleanVar(value=False)
             self.fixed_vars[column] = fixed_var
-            self.pivot_vars[column] = pivot_var
-
             ttk.Checkbutton(
                 self.fixed_checkbox_frame.inner, text=column, variable=fixed_var
             ).pack(anchor="w", padx=5, pady=2)
 
+            pivot_var = tk.BooleanVar(value=False)
+            self.pivot_vars[column] = pivot_var
+
+            row_frame = ttk.Frame(self.pivot_checkbox_frame.inner)
+            row_frame.pack(fill="x", padx=5, pady=2)
+
             ttk.Checkbutton(
-                self.pivot_checkbox_frame.inner, text=column, variable=pivot_var
-            ).pack(anchor="w", padx=5, pady=2)
+                row_frame,
+                text=column,
+                variable=pivot_var,
+                command=lambda c=column: self._on_pivot_toggle(c),
+            ).pack(side="left", anchor="w")
+
+            pair_var = tk.StringVar(value="Ninguno")
+            self.pair_vars[column] = pair_var
+
+            option_menu = tk.OptionMenu(
+                row_frame,
+                pair_var,
+                "Ninguno",
+            )
+            option_menu.configure(state="disabled")
+            option_menu.pack(side="right", padx=(10, 0))
+            self.pair_menus[column] = option_menu
+
+        # Ajustar las opciones iniciales de los menús desplegables.
+        self._refresh_pair_options()
+
+    def _selected_pivot_columns(self) -> List[str]:
+        """Devuelve las columnas marcadas como pivotables conservando el orden original."""
+
+        return [column for column, var in self.pivot_vars.items() if var.get()]
+
+    def _on_pivot_toggle(self, column: str) -> None:
+        """Habilita o deshabilita el menú de emparejamiento según el estado del checkbox."""
+
+        is_selected = self.pivot_vars[column].get()
+        menu = self.pair_menus[column]
+        if is_selected:
+            menu.configure(state="normal")
+        else:
+            # Si la columna deja de ser pivotable se limpia su emparejamiento y el de terceros.
+            for other, var in self.pair_vars.items():
+                if var.get() == column:
+                    self._set_pair(other, "Ninguno")
+            self._set_pair(column, "Ninguno")
+            menu.configure(state="disabled")
+        self._refresh_pair_options()
+
+    def _set_pair(self, column: str, value: str, update_relations: bool = True) -> None:
+        """Actualiza el valor del menú de emparejamiento, gestionando relaciones si corresponde."""
+
+        previous = self.pair_vars[column].get()
+        if previous == value:
+            return
+        self.pair_vars[column].set(value)
+        if update_relations:
+            self._apply_pair_change(column, previous, value)
+
+    def _apply_pair_change(self, column: str, previous: str, new_partner: str) -> None:
+        """Sincroniza los emparejamientos evitando referencias inconsistentes."""
+
+        # Romper la relación anterior si existía.
+        if previous != "Ninguno" and previous in self.pair_vars:
+            if self.pair_vars[previous].get() == column:
+                self._set_pair(previous, "Ninguno", update_relations=False)
+
+        if new_partner == "Ninguno":
+            return
+
+        # Validar que la nueva pareja siga marcada como pivotable.
+        if new_partner not in self.pair_vars or not self.pivot_vars[new_partner].get():
+            messagebox.showwarning(
+                "Emparejamiento inválido",
+                "La columna seleccionada como pareja no está marcada como pivotable.",
+            )
+            self._set_pair(column, "Ninguno", update_relations=False)
+            return
+
+        partner_current = self.pair_vars[new_partner].get()
+        if partner_current not in ("Ninguno", column):
+            other = partner_current
+            self._set_pair(new_partner, "Ninguno", update_relations=False)
+            if other in self.pair_vars and self.pair_vars[other].get() == new_partner:
+                self._set_pair(other, "Ninguno", update_relations=False)
+
+        if self.pair_vars[new_partner].get() != column:
+            self._set_pair(new_partner, column, update_relations=False)
+
+    def _on_option_menu_select(self, column: str, selection: str) -> None:
+        """Gestiona la selección de pareja realizada por el usuario."""
+
+        self._set_pair(column, selection)
+        self._refresh_pair_options()
+
+    def _refresh_pair_options(self) -> None:
+        """Actualiza dinámicamente los valores disponibles en cada menú de emparejamiento."""
+
+        selected_columns = self._selected_pivot_columns()
+        for column, menu in self.pair_menus.items():
+            menu_widget = menu["menu"]
+            menu_widget.delete(0, "end")
+
+            options = ["Ninguno"] + [c for c in selected_columns if c != column]
+            for option in options:
+                menu_widget.add_command(
+                    label=option,
+                    command=lambda opt=option, col=column: self._on_option_menu_select(col, opt),
+                )
+
+            current = self.pair_vars[column].get()
+            if current not in options:
+                self._set_pair(column, "Ninguno")
+
+            if self.pivot_vars[column].get():
+                menu.configure(state="normal")
+            else:
+                menu.configure(state="disabled")
+
+    def _build_groups(self, pivot_columns: List[str]) -> List[Tuple[str, ...]]:
+        """Construye las tuplas de columnas que se agruparán en la transformación."""
+
+        groups: List[Tuple[str, ...]] = []
+        visited = set()
+        for column in pivot_columns:
+            if column in visited:
+                continue
+            partner = self.pair_vars[column].get()
+            if (
+                partner not in (None, "Ninguno")
+                and partner in pivot_columns
+                and (partner_var := self.pair_vars.get(partner)) is not None
+                and partner_var.get() == column
+            ):
+                groups.append((column, partner))
+                visited.update({column, partner})
+            else:
+                groups.append((column,))
+                visited.add(column)
+        return groups
 
     def generate_pivoted_file(self) -> None:
-        """Genera un nuevo archivo Excel con la estructura pivotada."""
+        """Genera un nuevo archivo Excel con la estructura pivotada y lo guarda."""
 
         if self.dataframe is None:
             messagebox.showwarning(
@@ -169,7 +310,7 @@ class PivotApp(tk.Tk):
             return
 
         fixed_columns = [column for column, var in self.fixed_vars.items() if var.get()]
-        pivot_columns = [column for column, var in self.pivot_vars.items() if var.get()]
+        pivot_columns = self._selected_pivot_columns()
 
         if not fixed_columns:
             messagebox.showwarning(
@@ -193,14 +334,27 @@ class PivotApp(tk.Tk):
             )
             return
 
-        # Construcción manual del DataFrame pivotado según la especificación solicitada.
+        groups = self._build_groups(pivot_columns)
+        if not groups:
+            messagebox.showwarning(
+                "Sin columnas",
+                "No se detectaron columnas para transformar.",
+            )
+            return
+
         transformed_rows = []
         for _, row in self.dataframe.iterrows():
             fixed_values = row[fixed_columns].to_dict()
-            for pivot_column in pivot_columns:
-                new_row = fixed_values.copy()
-                new_row["Columna_pivotada"] = pivot_column
-                new_row["Valor"] = row[pivot_column]
+            for group in groups:
+                new_row = {column: fixed_values[column] for column in fixed_columns}
+                base_column = group[0]
+                new_row["Columna_base"] = base_column
+                new_row["Valor_A"] = row[base_column]
+                if len(group) == 2:
+                    partner_column = group[1]
+                    new_row["Valor_B"] = row[partner_column]
+                else:
+                    new_row["Valor_B"] = pd.NA
                 transformed_rows.append(new_row)
 
         if not transformed_rows:
@@ -212,22 +366,11 @@ class PivotApp(tk.Tk):
 
         result_df = pd.DataFrame(transformed_rows)
 
-        default_name = "resultado.xlsx"
-        initialdir = os.path.dirname(self.file_path) if self.file_path else None
-
-        save_path = filedialog.asksaveasfilename(
-            title="Guardar resultado",
-            defaultextension=".xlsx",
-            filetypes=[("Archivos de Excel", "*.xlsx")],
-            initialfile=default_name,
-            initialdir=initialdir,
-        )
-
-        if not save_path:
-            return  # El usuario canceló el guardado.
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        output_path = os.path.join(script_dir, "resultado.xlsx")
 
         try:
-            result_df.to_excel(save_path, index=False)
+            result_df.to_excel(output_path, index=False)
         except Exception as exc:
             messagebox.showerror(
                 "Error al guardar",
@@ -237,8 +380,14 @@ class PivotApp(tk.Tk):
 
         messagebox.showinfo(
             "Proceso completado",
-            f"El archivo se generó correctamente en: {save_path}",
+            f"El archivo se generó correctamente en: {output_path}",
         )
+
+    def mainloop(self, n: int = 0) -> None:  # type: ignore[override]
+        """Sobrescritura para asegurar refresco de menús ante cualquier cambio."""
+
+        self._refresh_pair_options()
+        super().mainloop(n)
 
 
 def main() -> None:
