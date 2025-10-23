@@ -16,6 +16,15 @@ from typing import Dict, List, Tuple
 
 import pandas as pd
 
+# ---------------------------------------------------------------------------
+# Configuración de la pantalla inicial (splash screen).
+# Cambie la ruta en `SPLASH_IMAGE_PATH` para utilizar la imagen que prefiera.
+# El programa intentará cargar la imagen; si no la encuentra o falla, mostrará
+# un mensaje de texto durante los 5 segundos definidos en `SPLASH_DURATION_MS`.
+# ---------------------------------------------------------------------------
+SPLASH_IMAGE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "splash.png")
+SPLASH_DURATION_MS = 5000
+
 
 class ScrollableCheckboxFrame(ttk.Frame):
     """Frame con scroll vertical para albergar widgets de selección."""
@@ -390,9 +399,62 @@ class PivotApp(tk.Tk):
         super().mainloop(n)
 
 
+def show_splash_screen() -> None:
+    """Muestra una pantalla inicial con imagen configurable durante 5 segundos."""
+
+    splash_root = tk.Tk()
+    splash_root.overrideredirect(True)
+    splash_root.configure(bg="white")
+    splash_root.resizable(False, False)
+
+    splash_image = None
+    if SPLASH_IMAGE_PATH and os.path.isfile(SPLASH_IMAGE_PATH):
+        try:
+            splash_image = tk.PhotoImage(file=SPLASH_IMAGE_PATH)
+        except tk.TclError as exc:
+            print(
+                "Advertencia: no se pudo cargar la imagen del splash. "
+                f"Detalle: {exc}"
+            )
+
+    if splash_image is not None:
+        width = splash_image.width()
+        height = splash_image.height()
+        label = tk.Label(splash_root, image=splash_image, borderwidth=0)
+        label.image = splash_image  # Se guarda la referencia para evitar que se libere.
+    else:
+        width = 400
+        height = 300
+        label = tk.Label(
+            splash_root,
+            text=(
+                "Configure `SPLASH_IMAGE_PATH` con la ruta de su imagen\n"
+                "para personalizar esta pantalla inicial."
+            ),
+            font=("Segoe UI", 12),
+            bg="white",
+            justify="center",
+            padx=20,
+            pady=20,
+        )
+
+    label.pack(fill="both", expand=True)
+
+    splash_root.update_idletasks()
+    screen_width = splash_root.winfo_screenwidth()
+    screen_height = splash_root.winfo_screenheight()
+    x = (screen_width // 2) - (width // 2)
+    y = (screen_height // 2) - (height // 2)
+    splash_root.geometry(f"{width}x{height}+{x}+{y}")
+
+    splash_root.after(SPLASH_DURATION_MS, splash_root.destroy)
+    splash_root.mainloop()
+
+
 def main() -> None:
     """Punto de entrada principal de la aplicación."""
 
+    show_splash_screen()
     app = PivotApp()
     app.mainloop()
 
