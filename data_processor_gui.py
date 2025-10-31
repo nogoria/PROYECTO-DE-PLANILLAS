@@ -918,6 +918,7 @@ class DataProcessorApp(tk.Tk):
                     descuento_pos[idx] = valor
 
         result = self.asignar_prima_neta(result)
+        result = self.asignar_porcentaje_beneficio(result)
 
         if "Descuento POS" in result.columns:
             result.loc[:, "Descuento POS"] = descuento_pos
@@ -1117,6 +1118,81 @@ class DataProcessorApp(tk.Tk):
             except Exception as exc:
                 print(f"Error al procesar fila {i}: {exc}")
                 df.at[i, "Prima Neta"] = 0
+
+        return df
+
+    def asignar_porcentaje_beneficio(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """
+        Asigna valores de "Porcentaje_Beneficio" según políticas definidas y justifica los casos sin beneficio.
+        """
+
+        if pd is None or df.empty:
+            if "Porcentaje_Beneficio" not in df.columns:
+                df["Porcentaje_Beneficio"] = 0
+            if "Motivo_No_Beneficio" not in df.columns:
+                df["Motivo_No_Beneficio"] = ""
+            return df
+
+        politicas = [
+            {"tipo": "Salud Sura Clasica", "plan": "266", "valor": 89000},
+            {"tipo": "Salud Sura Clasica", "plan": "267", "valor": 89000},
+            {"tipo": "Sura Evoluciona", "plan": "817", "valor": 71000},
+            {"tipo": "Salud Sura Global", "plan": "307", "valor": 89000},
+            {"tipo": "SALUD PARA TODOS", "plan": "13", "valor": 57000},
+            {"tipo": "SALUD PARA TODOS", "plan": "11", "valor": 57000},
+            {"tipo": "SALUD PARA TODOS", "plan": "12", "valor": 57000},
+        ]
+
+        if "Porcentaje_Beneficio" not in df.columns:
+            df["Porcentaje_Beneficio"] = 0
+        else:
+            df["Porcentaje_Beneficio"] = df["Porcentaje_Beneficio"].fillna(0)
+
+        if "Motivo_No_Beneficio" not in df.columns:
+            df["Motivo_No_Beneficio"] = ""
+        else:
+            df["Motivo_No_Beneficio"] = df["Motivo_No_Beneficio"].fillna("")
+
+        for i, row in df.iterrows():
+            try:
+                tipo_poliza = str(row.get("Tipo de Poliza", "")).strip()
+                plan_codigo = str(row.get("Plan", "")).strip()
+                elegible = bool(row.get("Elegible_Beneficio", False))
+                transicion = str(row.get("Transicion_Estado_Civil", "")).strip()
+
+                if not elegible:
+                    df.at[i, "Porcentaje_Beneficio"] = 0
+                    df.at[i, "Motivo_No_Beneficio"] = "❌ No cumple políticas del grupo familiar 💔"
+                    continue
+
+                match = next(
+                    (
+                        politica
+                        for politica in politicas
+                        if politica["tipo"].lower() == tipo_poliza.lower()
+                        and politica["plan"] == plan_codigo
+                    ),
+                    None,
+                )
+
+                if match:
+                    df.at[i, "Porcentaje_Beneficio"] = match["valor"]
+                    df.at[i, "Motivo_No_Beneficio"] = ""
+                else:
+                    df.at[i, "Porcentaje_Beneficio"] = 0
+                    df.at[i, "Motivo_No_Beneficio"] = "⚠️ Plan o tipo de póliza sin coincidencia 🧐"
+                    continue
+
+                parentesco_valor = str(row.get("Parentesco", "")).strip().lower()
+                if transicion and parentesco_valor in {"padre", "madre"}:
+                    df.at[i, "Porcentaje_Beneficio"] = 0
+                    df.at[i, "Motivo_No_Beneficio"] = "💡 Transición a casado: padres desplazados 👪"
+
+            except Exception as exc:
+                print(f"Error asignando porcentaje de beneficio en fila {i}: {exc}")
+                df.at[i, "Porcentaje_Beneficio"] = 0
+                if not df.at[i, "Motivo_No_Beneficio"]:
+                    df.at[i, "Motivo_No_Beneficio"] = "⚠️ Error al evaluar beneficios"
 
         return df
 
