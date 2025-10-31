@@ -1140,110 +1140,124 @@ class DataProcessorApp(tk.Tk):
 
 
     def aplicar_politica_beneficios(self, df: "pd.DataFrame") -> "pd.DataFrame":
-        """Aplicar políticas de beneficio familiar utilizando normalización flexible."""
+        """Aplica políticas de beneficio familiar según el grupo y el campo Plan, usando los parentescos reales."""
 
-        if df.empty or pd is None:
-            defaults = {
-                "Aplica_Beneficio": False,
-                "Motivo_No_Beneficio": "",
-                "Transicion_Soltero_Casado": False,
-                "Porcentaje_Beneficio": 0.0,
-            }
-            for columna, valor in defaults.items():
-                if columna not in df.columns:
-                    df[columna] = valor
-                else:
-                    df[columna] = df[columna].fillna(valor)
+        try:
+            import pandas as pd  # Local import to respect optional dependency
+        except ImportError:
             return df
 
-        if "Identificacion_Titular" not in df.columns or "Parentesco" not in df.columns:
-            defaults = {
-                "Aplica_Beneficio": False,
-                "Motivo_No_Beneficio": "",
-                "Transicion_Soltero_Casado": False,
-                "Porcentaje_Beneficio": 0.0,
-            }
-            for columna, valor in defaults.items():
-                if columna not in df.columns:
-                    df[columna] = valor
-                else:
-                    df[columna] = df[columna].fillna(valor)
+        if df.empty:
             return df
 
-        tabla_valores: Dict[str, Dict[str, float]] = {
-            "salud sura clasica": {"266": 89000, "267": 89000},
-            "sura evoluciona": {"817": 71000},
-            "salud sura global": {"307": 89000},
-            "salud para todos": {"13": 57000, "11": 57000, "12": 57000},
+        # Normalizar encabezados
+        df.columns = df.columns.str.strip().str.lower().str.replace(" ", "_")
+
+        # Detectar nombre real de la columna de parentesco
+        parentesco_col = None
+        for posible in ["parentesco", "parentesco_beneficiario", "relacion", "tipo_parentesco"]:
+            if posible in df.columns:
+                parentesco_col = posible
+                break
+
+        if not parentesco_col:
+            raise ValueError("No se encontró ninguna columna de parentesco en el archivo.")
+
+        # Asegura columnas base
+        for col in ["aplica_beneficio", "motivo_no_beneficio", "transicion_soltero_casado", "porcentaje_beneficio"]:
+            if col not in df.columns:
+                df[col] = None
+
+        # Tabla de referencia por plan
+        tabla_planes = {
+            266: 89000,
+            267: 89000,
+            817: 71000,
+            307: 89000,
+            13: 57000,
+            11: 57000,
+            12: 57000,
         }
 
-        df["Aplica_Beneficio"] = False
-        df["Motivo_No_Beneficio"] = ""
-        df["Porcentaje_Beneficio"] = 0
-        df["Transicion_Soltero_Casado"] = False
+        # Parentescos válidos según tu lista
+        parentescos_validos = ["conyuge", "hijo(a)", "padres", "titular", "otros"]
 
-        for titular_id, grupo in df.groupby("Identificacion_Titular"):
-            parentescos = [normalizar_texto(p) for p in grupo["Parentesco"].dropna().unique()]
-            if "Grupo" in grupo.columns:
-                grupos = [normalizar_texto(g) for g in grupo["Grupo"].dropna().unique()]
+        # Iterar por titular
+        if "identificacion_titular" not in df.columns:
+            return df
+
+        for titular_id in df["identificacion_titular"].unique():
+            grupo_titular = df.loc[df["identificacion_titular"] == titular_id]
+            grupo = grupo_titular["grupo"].iloc[0].strip().lower() if "grupo" in grupo_titular.columns else ""
+            parentescos = grupo_titular[parentesco_col].astype(str).str.strip().tolist()
+
+            # Detectar transición Soltero → Casado
+            tiene_conyuge = any(p == "Conyuge" for p in parentescos)
+            tiene_hijos = any(p == "Hijo(a)" for p in parentescos)
+            transicion = False
+
+            if "soltero" in grupo and tiene_conyuge and tiene_hijos:
+                grupo = "casado"
+                transicion = True
+
+            # Determinar beneficiarios válidos según grupo
+            beneficiarios_validos: List[str] = []
+            motivo_global = ""
+
+            if "soltero" in grupo:
+                # Solteros: Padres e Hijos
+                candidatos = [p for p in parentescos if p in ["Padres", "Hijo(a)"]]
+                beneficiarios_validos = candidatos[:3]
+                if len(candidatos) > 3:
+                    motivo_global = "Se priorizaron Padres e Hijos hasta 3 beneficiarios."
+
+            elif "casado" in grupo:
+                # Casados: Cónyuge e Hijos
+                candidatos = [p for p in parentescos if p in ["Conyuge", "Hijo(a)"]]
+                beneficiarios_validos = candidatos[:3]
+                if len(candidatos) > 3:
+                    motivo_global = "Se priorizaron Cónyuge e Hijos hasta 3 beneficiarios."
             else:
-                grupos = []
+                motivo_global = "Grupo no identificado."
 
-            if any("casado" in g for g in grupos):
-                grupo_nombre = "casado"
-            elif any("soltero" in g for g in grupos):
-                grupo_nombre = "soltero"
-            else:
-                grupo_nombre = "desconocido"
+            # Aplicar beneficios registro por registro
+            for idx, row in grupo_titular.iterrows():
+                parentesco = str(row[parentesco_col]).strip()
+                if "plan" not in row:
+                    plan_valor = None
+                else:
+                    plan_valor = row["plan"]
 
-            transicion = grupo_nombre == "soltero" and any("conyuge" in p for p in parentescos)
-            df.loc[grupo.index, "Transicion_Soltero_Casado"] = transicion
+                if pd.isna(plan_valor):
+                    plan = None
+                else:
+                    try:
+                        plan = int(plan_valor)
+                    except (TypeError, ValueError):
+                        plan = None
 
-            if grupo_nombre == "soltero":
-                validos = ["padres", "padre", "madre", "hijo", "hijo(a)"]
-            elif grupo_nombre == "casado":
-                validos = ["conyuge", "compa", "hijo", "hijo(a)"]
-            else:
-                validos = []
-
-            beneficiarios: List[int] = []
-            for idx, row in grupo.iterrows():
-                parentesco = normalizar_texto(row.get("Parentesco", ""))
-                tipo_poliza = normalizar_texto(row.get("TIPO POLIZA", ""))
-                plan_raw = str(row.get("PLAN", "")).strip()
-                plan = plan_raw.split(".")[0] if plan_raw else ""
-
-                motivo = ""
                 aplica = False
+                motivo = ""
                 valor = 0
 
-                if transicion:
-                    if any(token in parentesco for token in ["conyuge", "compa", "hijo"]):
-                        aplica = True
-                    else:
-                        motivo = "Padre/madre desplazado por transición a casado"
-                elif parentesco in validos or any(token in parentesco for token in validos):
+                if parentesco == "Titular":
                     aplica = True
+                    valor = tabla_planes.get(plan, 0)
+                    motivo = "Titular con beneficio asignado." if valor > 0 else "Plan no homologado."
+
+                elif parentesco in beneficiarios_validos:
+                    aplica = True
+                    valor = tabla_planes.get(plan, 0)
+                    motivo = "Beneficiario válido según políticas." if valor > 0 else "Plan no homologado."
+
                 else:
-                    motivo = f"No aplica por parentesco: {row.get('Parentesco', '')}"
-
-                if aplica and len(beneficiarios) >= 3:
                     aplica = False
-                    motivo = "Supera el máximo de 3 beneficiarios (incluye titular)"
+                    motivo = "No cumple políticas o excede número máximo permitido."
 
-                if aplica:
-                    beneficiarios.append(idx)
-                    valor = tabla_valores.get(tipo_poliza, {}).get(plan, 0)
-                    if valor == 0:
-                        motivo = f"Plan o póliza no encontrados: {tipo_poliza}, {plan}"
-                        aplica = False
-
-                df.loc[idx, "Aplica_Beneficio"] = aplica
-                df.loc[idx, "Porcentaje_Beneficio"] = valor if aplica else 0
-                if motivo:
-                    df.loc[idx, "Motivo_No_Beneficio"] = motivo
-                elif not aplica:
-                    df.loc[idx, "Motivo_No_Beneficio"] = "No cumple política general"
+                df.at[idx, "aplica_beneficio"] = aplica
+                df.at[idx, "porcentaje_beneficio"] = valor
+                df.at[idx, "motivo_no_beneficio"] = motivo_global if aplica else motivo
+                df.at[idx, "transicion_soltero_casado"] = transicion
 
         return df
 
