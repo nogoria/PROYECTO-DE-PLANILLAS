@@ -22,6 +22,38 @@ if TYPE_CHECKING:  # pragma: no cover - hints only
 CONFIG_FILE = "config.json"
 
 
+def _parse_numeric(value: Any) -> Optional[float]:
+    """Convert diverse numeric string formats into floats when possible."""
+
+    if value is None:
+        return None
+
+    if isinstance(value, (int, float)):
+        return float(value)
+
+    text = str(value).strip()
+    if not text:
+        return None
+
+    text = text.replace(" ", "")
+
+    candidates = [text]
+    if "," in text and "." in text:
+        candidates.append(text.replace(".", "").replace(",", "."))
+    if "," in text:
+        candidates.append(text.replace(",", "."))
+    if text.count(".") > 1:
+        candidates.append(text.replace(".", ""))
+
+    for candidate in candidates:
+        try:
+            return float(candidate)
+        except ValueError:
+            continue
+
+    return None
+
+
 @dataclass
 class PlanEntry:
     plan: str
@@ -670,17 +702,14 @@ class DataProcessorApp(tk.Tk):
         tipos = split_values(self.inputs["Tipos_Excluir"].get())
         estados = split_values(self.inputs["Estados_Excluir"].get())
 
-        try:
-            t_congelada = float(self.inputs["T_Congelada"].get())
-        except ValueError:
-            t_congelada = 0.0
+        t_congelada_value = _parse_numeric(self.inputs["T_Congelada"].get())
+        t_congelada = t_congelada_value if t_congelada_value is not None else 0.0
 
         planes: List[PlanEntry] = []
         for item in self.plan_tree.get_children():
             plan, poliza, valor = self.plan_tree.item(item, "values")
-            try:
-                valor_float = float(valor)
-            except (TypeError, ValueError):
+            valor_float = _parse_numeric(valor)
+            if valor_float is None:
                 valor_float = 0.0
             planes.append(PlanEntry(plan=str(plan), poliza=str(poliza), valor=valor_float))
 
@@ -693,15 +722,9 @@ class DataProcessorApp(tk.Tk):
             for plan, valor in planes_dict.items():
                 if valor in ("", None):
                     continue
-                try:
-                    valor_float = float(valor)
-                except (TypeError, ValueError):
-                    try:
-                        valor_float = float(
-                            str(valor).replace(",", "").replace(".", "")
-                        )
-                    except ValueError:
-                        continue
+                valor_float = _parse_numeric(valor)
+                if valor_float is None:
+                    continue
                 tarifas[rango_key][str(plan)] = valor_float
 
         config = AppConfig(
@@ -892,50 +915,7 @@ class DataProcessorApp(tk.Tk):
                 if valor is not None:
                     descuento_pos[idx] = valor
 
-        # Calcular Prima Neta
-        tarifas = {
-            float(age_key): {plan: float(valor) for plan, valor in planes.items()}
-            for age_key, planes in config.tarifas.items()
-            if _is_number(age_key) and isinstance(planes, dict)
-        }
-
-        if "Prima Neta" in result.columns:
-            prima_neta: List[Optional[float]] = list(result["Prima Neta"])
-        else:
-            prima_neta = [None] * len(result)
-
-        if tarifas and plan_column and edad_column:
-            sorted_ages = sorted(tarifas.keys())
-
-            def obtener_tarifa(edad: Any, plan_val: Any) -> Optional[float]:
-                try:
-                    edad_float = float(edad)
-                except (TypeError, ValueError):
-                    return None
-
-                plan_normalized = normalize_string(plan_val)
-                applicable_age = None
-                for age_threshold in sorted_ages:
-                    if edad_float >= age_threshold:
-                        applicable_age = age_threshold
-                if applicable_age is None:
-                    applicable_age = sorted_ages[0]
-
-                row_tarifas = tarifas.get(applicable_age, {})
-                for plan, valor in row_tarifas.items():
-                    if normalize_string(plan) == plan_normalized:
-                        return valor
-                return None
-
-            for idx, row in result.iterrows():
-                valor = obtener_tarifa(row.get(edad_column), row.get(plan_column))
-                if valor is not None:
-                    prima_neta[idx] = valor
-
-        if "Prima Neta" in result.columns:
-            result.loc[:, "Prima Neta"] = prima_neta
-        else:
-            result["Prima Neta"] = prima_neta
+        result = self.asignar_prima_neta(result)
 
         if "Descuento POS" in result.columns:
             result.loc[:, "Descuento POS"] = descuento_pos
@@ -944,6 +924,103 @@ class DataProcessorApp(tk.Tk):
 
         result.reset_index(drop=True, inplace=True)
         return result
+
+    def asignar_prima_neta(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """
+        Cruza el DataFrame con las tarifas definidas por plan y rango de edad (decimales incluidos),
+        y asigna el valor correspondiente en la columna 'Prima Neta'.
+        """
+
+        if pd is None or df.empty:
+            return df
+
+        tarifas_fuente: Dict[str, Dict[str, Any]] = {}
+        if self.config_data.tarifas:
+            tarifas_fuente = self.config_data.tarifas
+        elif hasattr(self, "tarifas"):
+            tarifas_fuente = self.tarifas  # type: ignore[assignment]
+
+        if not tarifas_fuente:
+            return df
+
+        plan_column: Optional[str] = None
+        edad_column: Optional[str] = None
+        for column in df.columns:
+            normalized = str(column).strip().lower()
+            if normalized == "plan" and plan_column is None:
+                plan_column = column
+            elif normalized == "edad" and edad_column is None:
+                edad_column = column
+
+        if plan_column is None or edad_column is None:
+            return df
+
+        parsed_tarifas: List[Tuple[float, float, Dict[str, float]]] = []
+        for rango, valores in tarifas_fuente.items():
+            if not isinstance(valores, dict):
+                continue
+            try:
+                limites = [parte.strip() for parte in str(rango).split(",")]
+                if len(limites) != 2:
+                    continue
+                edad_min_val = _parse_numeric(limites[0])
+                edad_max_val = _parse_numeric(limites[1])
+                if edad_min_val is None or edad_max_val is None:
+                    continue
+                planes_normalizados: Dict[str, float] = {}
+                for plan_clave, valor in valores.items():
+                    plan_nombre = str(plan_clave).strip()
+                    if not plan_nombre:
+                        continue
+                    valor_float = _parse_numeric(valor)
+                    if valor_float is None:
+                        continue
+                    planes_normalizados[plan_nombre.casefold()] = valor_float
+                if planes_normalizados:
+                    parsed_tarifas.append((edad_min_val, edad_max_val, planes_normalizados))
+            except Exception:
+                continue
+
+        if not parsed_tarifas:
+            return df
+
+        if "Prima Neta" not in df.columns:
+            df["Prima Neta"] = 0
+
+        for i, row in df.iterrows():
+            try:
+                plan_valor = row.get(plan_column)
+                if pd.isna(plan_valor):  # type: ignore[attr-defined]
+                    plan = ""
+                else:
+                    plan = str(plan_valor).strip()
+                if not plan:
+                    df.at[i, "Prima Neta"] = 0
+                    continue
+
+                edad_valor = row.get(edad_column)
+                edad_numero = _parse_numeric(edad_valor)
+                if edad_numero is None:
+                    df.at[i, "Prima Neta"] = 0
+                    continue
+
+                prima: Optional[float] = None
+                for edad_min, edad_max, planes in parsed_tarifas:
+                    if edad_min <= edad_numero <= edad_max:
+                        prima = planes.get(plan.casefold())
+                        if prima is not None:
+                            break
+
+                if prima is not None:
+                    df.at[i, "Prima Neta"] = prima
+                else:
+                    df.at[i, "Prima Neta"] = 0
+
+            except Exception as exc:
+                print(f"Error al procesar fila {i}: {exc}")
+                df.at[i, "Prima Neta"] = 0
+
+        return df
 
     def _update_summary(self, df: "pd.DataFrame") -> None:
         info = [
@@ -999,16 +1076,6 @@ class DataProcessorApp(tk.Tk):
             messagebox.showinfo("Exportar", "Archivo guardado correctamente.")
         except Exception as exc:
             messagebox.showerror("Exportar", f"No fue posible guardar el archivo: {exc}")
-
-
-def _is_number(value: Any) -> bool:
-    try:
-        float(value)
-    except (TypeError, ValueError):
-        return False
-    return True
-
-
 if __name__ == "__main__":
     app = DataProcessorApp()
     app.mainloop()
