@@ -564,11 +564,11 @@ class DataProcessorApp(tk.Tk):
         except ValueError:
             return
 
-        columns = self.tarifas_tree["columns"]
-        if col_index < 0 or col_index >= len(columns):
+        columnas = self.tarifas_tree["columns"]
+        if col_index < 0 or col_index >= len(columnas):
             return
 
-        col_name = columns[col_index]
+        col_name = columnas[col_index]
         rango = self.tarifas_tree.item(row, "values")[0]
 
         bbox = self.tarifas_tree.bbox(row, col)
@@ -578,23 +578,23 @@ class DataProcessorApp(tk.Tk):
 
         entry = ttk.Entry(self.tarifas_tree)
         valor_actual = self.tarifas.get(rango, {}).get(col_name, "")
-        if valor_actual in ("", None):
-            entry.insert(0, "")
-        else:
-            entry.insert(0, str(valor_actual))
+        entry.insert(0, str(valor_actual))
         entry.place(x=x, y=y, width=width, height=height)
         entry.focus()
 
         def guardar_valor(event: Optional[tk.Event] = None) -> None:
             nuevo_valor = entry.get().strip()
             entry.destroy()
-            try:
-                nuevo_valor = float(
-                    str(nuevo_valor).replace(",", "").replace(".", "")
-                )
-            except ValueError:
-                pass
-            self.tarifas.setdefault(rango, {})[col_name] = nuevo_valor
+
+            if nuevo_valor == "":
+                valor_final: Any = ""
+            else:
+                try:
+                    valor_final = float(nuevo_valor.replace(",", "."))
+                except ValueError:
+                    valor_final = nuevo_valor
+
+            self.tarifas.setdefault(rango, {})[col_name] = valor_final
             self.actualizar_columnas_tarifas()
 
         entry.bind("<Return>", guardar_valor)
