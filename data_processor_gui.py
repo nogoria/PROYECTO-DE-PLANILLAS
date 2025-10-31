@@ -234,45 +234,41 @@ class DataProcessorApp(tk.Tk):
             side="left", expand=True, fill="x", padx=(5, 0)
         )
 
-        tariff_frame = ttk.LabelFrame(plan_frame, text="Tarifas por Edad y Plan")
-        tariff_frame.pack(fill="both", expand=True)
-        self.tariff_columns: List[str] = []
-        self.selected_tariff_column: Optional[str] = None
-        self.tariff_tree = ttk.Treeview(tariff_frame, show="headings", height=8)
-        self.tariff_tree.pack(fill="both", expand=True, pady=5)
-        self.tariff_tree.bind("<Double-1>", self._on_tariff_double_click)
-        self.tariff_tree.bind("<Button-1>", self._on_tariff_click)
-        tariff_scroll = ttk.Scrollbar(
-            tariff_frame, orient="vertical", command=self.tariff_tree.yview
-        )
-        self.tariff_tree.configure(yscrollcommand=tariff_scroll.set)
-        tariff_scroll.pack(side="right", fill="y")
+        tarifas_frame = ttk.LabelFrame(plan_frame, text="Tarifas por Edad y Plan")
+        tarifas_frame.pack(fill="both", expand=True)
 
-        tariff_btn_frame = ttk.Frame(tariff_frame)
-        tariff_btn_frame.pack(fill="x", pady=5)
+        self.tarifas_tree = ttk.Treeview(tarifas_frame, columns=("Edad",), show="headings")
+        self.tarifas_tree.heading("Edad", text="Edad")
+        self.tarifas_tree.column("Edad", width=100, anchor="center")
+        self.tarifas_tree.pack(fill="both", expand=True)
+
+        self.tarifas: Dict[str, Dict[str, Any]] = {}
+
+        tarifas_btns = ttk.Frame(tarifas_frame)
+        tarifas_btns.pack(fill="x", pady=(5, 5))
+
         ttk.Button(
-            tariff_btn_frame,
+            tarifas_btns,
             text="Agregar Rango de Edad",
-            command=self._add_tariff_age_row,
-        ).pack(side="left", expand=True, fill="x", padx=(0, 5))
+            command=self.agregar_rango_edad,
+        ).pack(side="left", padx=5)
         ttk.Button(
-            tariff_btn_frame,
+            tarifas_btns,
             text="Eliminar Rango",
-            command=self._remove_tariff_age_row,
-        ).pack(side="left", expand=True, fill="x", padx=5)
+            command=self.eliminar_rango_edad,
+        ).pack(side="left", padx=5)
         ttk.Button(
-            tariff_btn_frame,
+            tarifas_btns,
             text="Agregar Plan",
-            command=self._add_tariff_plan_column,
-        ).pack(side="left", expand=True, fill="x", padx=5)
+            command=self.agregar_plan_a_tarifas,
+        ).pack(side="left", padx=5)
         ttk.Button(
-            tariff_btn_frame,
+            tarifas_btns,
             text="Eliminar Plan",
-            command=self._remove_tariff_plan_column,
-        ).pack(side="left", expand=True, fill="x", padx=(5, 0))
+            command=self.eliminar_plan_de_tarifas,
+        ).pack(side="left", padx=5)
 
-        self.tariff_edit_entry: Optional[tk.Entry] = None
-        self._refresh_tariff_tree()
+        self.tarifas_tree.bind("<Double-1>", self.editar_celda_tarifa)
 
         action_frame = ttk.Frame(self.admin_tab)
         action_frame.pack(fill="x", padx=10, pady=(0, 10))
@@ -484,195 +480,149 @@ class DataProcessorApp(tk.Tk):
     # ------------------------------------------------------------------
     # Gestión tabla de tarifas
     # ------------------------------------------------------------------
-    def _refresh_tariff_tree(self) -> None:
-        if self.tariff_edit_entry is not None:
-            self.tariff_edit_entry.destroy()
-            self.tariff_edit_entry = None
-        columns = ["Edad"] + self.tariff_columns
-        self.tariff_tree["columns"] = columns
-        for column in columns:
-            self.tariff_tree.heading(column, text=column)
-            anchor = "center" if column != "Edad" else "w"
-            width = 90 if column != "Edad" else 80
-            self.tariff_tree.column(column, anchor=anchor, width=width, stretch=True)
-
-        # Ensure every item has all columns
-        for item in self.tariff_tree.get_children():
-            current_values = list(self.tariff_tree.item(item, "values"))
-            if len(current_values) > len(columns):
-                current_values = current_values[: len(columns)]
-            if len(current_values) < len(columns):
-                current_values += [""] * (len(columns) - len(current_values))
-            self.tariff_tree.item(item, values=current_values)
-
-    def _add_tariff_age_row(self) -> None:
-        value = simpledialog.askstring(
-            "Agregar rango de edad",
-            "Ingrese la edad base (por ejemplo 0, 60):",
-            parent=self,
+    def agregar_rango_edad(self) -> None:
+        rango = simpledialog.askstring(
+            "Nuevo rango", "Ingrese el rango de edad (ej: 0,59):", parent=self
         )
-        if value is None:
+        if not rango:
             return
 
-        value = value.strip()
-        if not value:
-            messagebox.showwarning("Edad inválida", "Ingrese un valor para la edad.")
+        rango = rango.strip()
+        if rango in self.tarifas:
+            messagebox.showwarning("Aviso", "Este rango ya existe.")
             return
 
-        if value in {self.tariff_tree.set(item, "Edad") for item in self.tariff_tree.get_children()}:
-            messagebox.showwarning(
-                "Duplicado", "Ya existe un registro con la edad especificada."
-            )
+        self.tarifas[rango] = {}
+        self.tarifas_tree.insert("", "end", values=(rango,))
+        self.actualizar_columnas_tarifas()
+
+    def eliminar_rango_edad(self) -> None:
+        selected = self.tarifas_tree.selection()
+        if not selected:
             return
+        item_id = selected[0]
+        valores = self.tarifas_tree.item(item_id, "values")
+        rango = valores[0] if valores else ""
+        if rango in self.tarifas:
+            del self.tarifas[rango]
+        self.tarifas_tree.delete(*selected)
+        self.actualizar_columnas_tarifas()
 
-        row_values = [value] + [""] * len(self.tariff_columns)
-        self.tariff_tree.insert("", tk.END, values=row_values)
-
-    def _remove_tariff_age_row(self) -> None:
-        selection = self.tariff_tree.selection()
-        if not selection:
-            messagebox.showinfo(
-                "Eliminar rango", "Seleccione una fila de edad para eliminarla."
-            )
-            return
-        for item in selection:
-            self.tariff_tree.delete(item)
-
-    def _add_tariff_plan_column(self) -> None:
-        plan_name = simpledialog.askstring(
-            "Agregar plan", "Ingrese el identificador del plan:", parent=self
+    def agregar_plan_a_tarifas(self) -> None:
+        plan = simpledialog.askstring(
+            "Nuevo plan", "Ingrese el número del plan:", parent=self
         )
-        if plan_name is None:
-            return
-        plan_name = plan_name.strip()
-        if not plan_name:
-            messagebox.showwarning("Plan inválido", "Ingrese un nombre para el plan.")
+        if not plan:
             return
 
-        normalized = plan_name.casefold()
-        if any(col.casefold() == normalized for col in self.tariff_columns):
-            messagebox.showwarning("Duplicado", "Ya existe una columna con ese plan.")
+        plan = plan.strip()
+        if plan in self.tarifas_tree["columns"]:
+            messagebox.showwarning("Aviso", "Este plan ya existe.")
             return
 
-        self.tariff_columns.append(plan_name)
-        self.selected_tariff_column = None
-        self._refresh_tariff_tree()
+        cols = list(self.tarifas_tree["columns"]) + [plan]
+        self.tarifas_tree["columns"] = cols
+        self.tarifas_tree.heading(plan, text=plan)
+        self.tarifas_tree.column(plan, width=100, anchor="center")
 
-    def _remove_tariff_plan_column(self) -> None:
-        if not self.tariff_columns:
-            messagebox.showinfo("Eliminar plan", "No hay columnas de planes para eliminar.")
+        for rango in self.tarifas:
+            self.tarifas[rango][plan] = self.tarifas[rango].get(plan, "")
+
+        self.actualizar_columnas_tarifas()
+
+    def eliminar_plan_de_tarifas(self) -> None:
+        plan = simpledialog.askstring(
+            "Eliminar plan", "Ingrese el número del plan a eliminar:", parent=self
+        )
+        if not plan:
+            return
+        if plan == "Edad":
+            messagebox.showwarning("Aviso", "La columna Edad no puede eliminarse.")
+            return
+        if plan not in self.tarifas_tree["columns"]:
             return
 
-        column = self.selected_tariff_column
-        if column is None or column == "Edad":
-            column = simpledialog.askstring(
-                "Eliminar plan",
-                "Indique el nombre de la columna de plan que desea eliminar:",
-                parent=self,
-            )
-            if column is None:
-                return
+        for rango in self.tarifas:
+            self.tarifas[rango].pop(plan, None)
 
-        column = column.strip()
-        if column == "Edad" or not column:
-            messagebox.showwarning(
-                "Columna inválida", "Debe indicar una columna de plan para eliminar."
-            )
+        nuevas = [c for c in self.tarifas_tree["columns"] if c != plan]
+        self.tarifas_tree["columns"] = nuevas
+        self.actualizar_columnas_tarifas()
+
+    def editar_celda_tarifa(self, event: tk.Event) -> None:
+        region = self.tarifas_tree.identify("region", event.x, event.y)
+        if region != "cell":
             return
 
-        matches = [c for c in self.tariff_columns if c.casefold() == column.casefold()]
-        if not matches:
-            messagebox.showerror("Plan", f"No se encontró la columna '{column}'.")
+        col = self.tarifas_tree.identify_column(event.x)
+        row = self.tarifas_tree.identify_row(event.y)
+        if not row or col == "#1":
             return
 
-        target = matches[0]
-        target_index = self.tariff_columns.index(target)
-        self.tariff_columns.pop(target_index)
-        self.selected_tariff_column = None
+        try:
+            col_index = int(col.replace("#", "")) - 1
+        except ValueError:
+            return
 
-        for item in self.tariff_tree.get_children():
-            values = list(self.tariff_tree.item(item, "values"))
-            remove_index = target_index + 1  # Offset by Edad column
-            if len(values) > remove_index:
-                values.pop(remove_index)
-                self.tariff_tree.item(item, values=values)
+        columns = self.tarifas_tree["columns"]
+        if col_index < 0 or col_index >= len(columns):
+            return
 
-        self._refresh_tariff_tree()
+        col_name = columns[col_index]
+        rango = self.tarifas_tree.item(row, "values")[0]
 
-    def _on_tariff_click(self, event: tk.Event) -> None:
-        region = self.tariff_tree.identify_region(event.x, event.y)
-        if region == "heading":
-            column_id = self.tariff_tree.identify_column(event.x)
-            try:
-                index = int(column_id.replace("#", "")) - 1
-            except ValueError:
-                self.selected_tariff_column = None
-                return
-            columns = list(self.tariff_tree["columns"])
-            if 0 <= index < len(columns):
-                self.selected_tariff_column = columns[index]
+        bbox = self.tarifas_tree.bbox(row, col)
+        if not bbox:
+            return
+        x, y, width, height = bbox
+
+        entry = ttk.Entry(self.tarifas_tree)
+        valor_actual = self.tarifas.get(rango, {}).get(col_name, "")
+        if valor_actual in ("", None):
+            entry.insert(0, "")
         else:
-            self.selected_tariff_column = None
-
-    def _on_tariff_double_click(self, event: tk.Event) -> None:
-        if self.tariff_edit_entry is not None:
-            self.tariff_edit_entry.destroy()
-            self.tariff_edit_entry = None
-
-        row_id = self.tariff_tree.identify_row(event.y)
-        column_id = self.tariff_tree.identify_column(event.x)
-        if not row_id or column_id == "#0":
-            return
-
-        x, y, width, height = self.tariff_tree.bbox(row_id, column_id)
-        if width == 0 and height == 0:
-            return
-
-        column_index = int(column_id.replace("#", "")) - 1
-        columns = list(self.tariff_tree["columns"])
-        if column_index < 0 or column_index >= len(columns):
-            return
-
-        current_value = self.tariff_tree.set(row_id, columns[column_index])
-
-        entry = tk.Entry(self.tariff_tree)
-        entry.insert(0, current_value)
+            entry.insert(0, str(valor_actual))
         entry.place(x=x, y=y, width=width, height=height)
         entry.focus()
-        entry.bind("<Return>", lambda e: self._finish_tariff_edit(row_id, columns[column_index], entry))
-        entry.bind("<FocusOut>", lambda e: self._finish_tariff_edit(row_id, columns[column_index], entry))
-        self.tariff_edit_entry = entry
 
-    def _finish_tariff_edit(self, item_id: str, column: str, entry: tk.Entry) -> None:
-        value = entry.get().strip()
-        if column != "Edad" and value:
+        def guardar_valor(event: Optional[tk.Event] = None) -> None:
+            nuevo_valor = entry.get().strip()
+            entry.destroy()
             try:
-                float(value)
+                nuevo_valor = float(
+                    str(nuevo_valor).replace(",", "").replace(".", "")
+                )
             except ValueError:
-                messagebox.showerror(
-                    "Valor inválido", "Ingrese un número válido para la prima."
-                )
-                entry.focus()
-                return
-        if column == "Edad":
-            if not value:
-                messagebox.showwarning(
-                    "Edad inválida", "La edad no puede quedar vacía."
-                )
-                entry.focus()
-                return
-            for other_item in self.tariff_tree.get_children():
-                if other_item == item_id:
-                    continue
-                if self.tariff_tree.set(other_item, "Edad") == value:
-                    messagebox.showwarning(
-                        "Duplicado", "Ya existe una fila con la edad indicada."
-                    )
-                    entry.focus()
-                    return
-        self.tariff_tree.set(item_id, column, value)
-        entry.destroy()
-        self.tariff_edit_entry = None
+                pass
+            self.tarifas.setdefault(rango, {})[col_name] = nuevo_valor
+            self.actualizar_columnas_tarifas()
+
+        entry.bind("<Return>", guardar_valor)
+        entry.bind("<FocusOut>", guardar_valor)
+
+    def actualizar_columnas_tarifas(self) -> None:
+        columnas = list(self.tarifas_tree["columns"])
+        if "Edad" not in columnas:
+            columnas = ["Edad"] + [col for col in columnas if col != "Edad"]
+            self.tarifas_tree["columns"] = columnas
+
+        for column in columnas:
+            texto = "Edad" if column == "Edad" else column
+            self.tarifas_tree.heading(column, text=texto)
+            self.tarifas_tree.column(column, width=100, anchor="center")
+
+        for item in self.tarifas_tree.get_children():
+            self.tarifas_tree.delete(item)
+
+        for rango, valores in self.tarifas.items():
+            fila = [rango]
+            for plan in columnas[1:]:
+                valor = valores.get(plan, "")
+                if isinstance(valor, float) and valor.is_integer():
+                    fila.append(str(int(valor)))
+                else:
+                    fila.append(str(valor) if valor != "" else "")
+            self.tarifas_tree.insert("", "end", values=fila)
 
     # ------------------------------------------------------------------
     # Configuración
@@ -735,26 +685,24 @@ class DataProcessorApp(tk.Tk):
             planes.append(PlanEntry(plan=str(plan), poliza=str(poliza), valor=valor_float))
 
         tarifas: Dict[str, Dict[str, float]] = {}
-        columns = list(self.tariff_tree["columns"])
-        for item in self.tariff_tree.get_children():
-            row_values = list(self.tariff_tree.item(item, "values"))
-            if not row_values:
+        for rango, planes_dict in self.tarifas.items():
+            rango_key = str(rango).strip()
+            if not rango_key:
                 continue
-            edad = str(row_values[0]).strip()
-            if not edad:
-                continue
-            tarifas.setdefault(edad, {})
-            for index, column in enumerate(columns[1:], start=1):
-                if index >= len(row_values):
-                    continue
-                value_text = str(row_values[index]).strip()
-                if not value_text:
+            tarifas[rango_key] = {}
+            for plan, valor in planes_dict.items():
+                if valor in ("", None):
                     continue
                 try:
-                    value_float = float(value_text)
-                except ValueError:
-                    continue
-                tarifas[edad][column] = value_float
+                    valor_float = float(valor)
+                except (TypeError, ValueError):
+                    try:
+                        valor_float = float(
+                            str(valor).replace(",", "").replace(".", "")
+                        )
+                    except ValueError:
+                        continue
+                tarifas[rango_key][str(plan)] = valor_float
 
         config = AppConfig(
             parentescos_excluir=parentescos,
@@ -797,26 +745,21 @@ class DataProcessorApp(tk.Tk):
                 values=(plan.plan, plan.poliza, f"{plan.valor:.2f}"),
             )
 
-        self.tariff_tree.delete(*self.tariff_tree.get_children())
-        tariff_columns_set = {plan for row in config.tarifas.values() for plan in row}
-        self.tariff_columns = sorted(tariff_columns_set, key=lambda value: value)
-        self._refresh_tariff_tree()
-        def age_sort_key(item: Tuple[str, Dict[str, float]]) -> float:
-            try:
-                return float(item[0])
-            except (TypeError, ValueError):
-                return float("inf")
+        self.tarifas.clear()
+        for edad, row in config.tarifas.items():
+            self.tarifas[str(edad)] = {str(plan): valor for plan, valor in row.items()}
 
-        for edad, row in sorted(config.tarifas.items(), key=age_sort_key):
-            values = [edad]
-            for column in self.tariff_columns:
-                valor = row.get(column, "")
-                if valor == "":
-                    values.append("")
-                else:
-                    values.append(f"{float(valor):.2f}")
-            self.tariff_tree.insert("", tk.END, values=values)
-        self._refresh_tariff_tree()
+        plan_columns = sorted(
+            {plan for tarifas in self.tarifas.values() for plan in tarifas.keys()}
+        )
+        columnas = ["Edad"] + plan_columns
+        self.tarifas_tree["columns"] = columnas
+        for column in columnas:
+            texto = "Edad" if column == "Edad" else column
+            self.tarifas_tree.heading(column, text=texto)
+            self.tarifas_tree.column(column, width=100, anchor="center")
+
+        self.actualizar_columnas_tarifas()
 
     # ------------------------------------------------------------------
     # Procesamiento de datos
