@@ -1126,240 +1126,104 @@ class DataProcessorApp(tk.Tk):
 
 
     def aplicar_politica_beneficios(self, df: "pd.DataFrame") -> "pd.DataFrame":
-        """Aplica la política familiar embebida para asignar el beneficio correspondiente."""
-
-        columnas_objetivo = [
-            ("Aplica_Beneficio", False),
-            ("Motivo_No_Beneficio", ""),
-            ("Transicion_Soltero_Casado", False),
-            ("Porcentaje_Beneficio", 0.0),
-        ]
+        """Aplica las políticas de beneficio familiar con mensajes detallados."""
 
         if df.empty or pd is None:
-            for columna, valor in columnas_objetivo:
+            defaults = {
+                "Aplica_Beneficio": False,
+                "Motivo_No_Beneficio": "",
+                "Transicion_Soltero_Casado": False,
+                "Porcentaje_Beneficio": 0.0,
+            }
+            for columna, valor in defaults.items():
                 if columna not in df.columns:
                     df[columna] = valor
-            return df
-
-        tabla_valores = pd.DataFrame(
-            {
-                "TIPO POLIZA": [
-                    "Salud Sura Clasica",
-                    "Salud Sura Clasica",
-                    "Sura Evoluciona",
-                    "Salud Sura Global",
-                    "SALUD PARA TODOS",
-                    "SALUD PARA TODOS",
-                    "SALUD PARA TODOS",
-                ],
-                "PLAN": ["266", "267", "817", "307", "13", "11", "12"],
-                "VALOR": [89000, 89000, 71000, 89000, 57000, 57000, 57000],
-            }
-        )
-
-        def normalizar_texto(valor: Any) -> str:
-            texto = str(valor or "").strip().lower()
-            texto = (
-                unicodedata.normalize("NFKD", texto)
-                .encode("ascii", "ignore")
-                .decode("ascii")
-            )
-            return texto
-
-        def normalizar_clave(valor: Any) -> str:
-            return normalizar_texto(valor).replace(" ", "")
-
-        def encontrar_columna_df(candidatos: List[str]) -> Optional[str]:
-            objetivos = {normalizar_clave(objetivo): objetivo for objetivo in candidatos}
-            for columna in df.columns:
-                normalizada = normalizar_clave(columna)
-                if normalizada in objetivos:
-                    return columna
-            return None
-
-        def encontrar_columna_tabla(tabla: "pd.DataFrame", candidatos: List[str]) -> Optional[str]:
-            objetivos = {normalizar_clave(objetivo) for objetivo in candidatos}
-            for columna in tabla.columns:
-                if normalizar_clave(columna) in objetivos:
-                    return columna
-            return None
-
-        identificacion_col = encontrar_columna_df(
-            [
-                "identificacion_titular",
-                "identificacion titular",
-                "id_titular",
-                "documento_titular",
-                "identificacion",
-            ]
-        )
-        parentesco_col = encontrar_columna_df(["parentesco"])
-        plan_col = encontrar_columna_df(["plan"])
-        tipo_poliza_col = encontrar_columna_df(
-            ["tipo_poliza", "tipo de poliza", "tipo_poliza", "tipo poliza"]
-        )
-        grupo_col = encontrar_columna_df(
-            ["grupo", "grupo_familiar", "grupo familiar", "grupo actual"]
-        )
-
-        for columna, valor in columnas_objetivo:
-            if columna not in df.columns:
-                df[columna] = valor
-            else:
-                if columna == "Motivo_No_Beneficio":
-                    df[columna] = df[columna].fillna("")
                 else:
                     df[columna] = df[columna].fillna(valor)
-
-        if not all([identificacion_col, parentesco_col, plan_col, tipo_poliza_col]):
             return df
 
-        tipo_ref_col = encontrar_columna_tabla(
-            tabla_valores, ["tipo_poliza", "tipo de poliza", "tipo_poliza", "tipo poliza"]
-        )
-        plan_ref_col = encontrar_columna_tabla(tabla_valores, ["plan"])
-        valor_ref_col = encontrar_columna_tabla(tabla_valores, ["valor", "porcentaje", "monto"])
+        tabla_valores = pd.DataFrame([
+            {"TIPO POLIZA": "Salud Sura Clasica", "PLAN": "266", "VALOR": 89000},
+            {"TIPO POLIZA": "Salud Sura Clasica", "PLAN": "267", "VALOR": 89000},
+            {"TIPO POLIZA": "Sura Evoluciona", "PLAN": "817", "VALOR": 71000},
+            {"TIPO POLIZA": "Salud Sura Global", "PLAN": "307", "VALOR": 89000},
+            {"TIPO POLIZA": "SALUD PARA TODOS", "PLAN": "13", "VALOR": 57000},
+            {"TIPO POLIZA": "SALUD PARA TODOS", "PLAN": "11", "VALOR": 57000},
+            {"TIPO POLIZA": "SALUD PARA TODOS", "PLAN": "12", "VALOR": 57000},
+        ])
 
-        if not all([tipo_ref_col, plan_ref_col, valor_ref_col]):
+        valores_dict = {
+            (str(row["TIPO POLIZA"]).strip().lower(), str(row["PLAN"]).strip()): row["VALOR"]
+            for _, row in tabla_valores.iterrows()
+        }
+
+        df["Aplica_Beneficio"] = False
+        df["Motivo_No_Beneficio"] = ""
+        df["Transicion_Soltero_Casado"] = False
+        df["Porcentaje_Beneficio"] = 0.0
+
+        if "Identificacion_Titular" not in df.columns or "Parentesco" not in df.columns:
             return df
 
-        valores_dict: Dict[Tuple[str, str], float] = {}
-        for _, fila in tabla_valores.iterrows():
-            tipo_val = normalizar_clave(fila.get(tipo_ref_col, ""))
-            plan_val = str(fila.get(plan_ref_col, "")).strip()
-            valor = _parse_numeric(fila.get(valor_ref_col))
-            if not tipo_val or not plan_val or valor is None:
-                continue
-            valores_dict[(tipo_val, plan_val)] = valor
+        for titular_id, grupo in df.groupby("Identificacion_Titular"):
+            grupo_texto = str(grupo.iloc[0].get("Grupo", "")).lower()
+            parentescos = grupo["Parentesco"].astype(str).str.lower().tolist()
 
-        if not valores_dict:
-            return df
+            tiene_conyuge = any("cónyuge" in p or "conyuge" in p or "compañero" in p for p in parentescos)
 
-        max_beneficiarios = 3
+            if "soltero" in grupo_texto and tiene_conyuge:
+                df.loc[grupo.index, "Transicion_Soltero_Casado"] = True
+                modo = "Transición Soltero → Casado"
+                prioridad = ["titular", "cónyuge", "conyuge", "compañero", "hijo", "padre", "madre"]
+            elif any(palabra in grupo_texto for palabra in ["casado", "cónyuge", "conyuge", "compañero"]):
+                modo = "Casado"
+                prioridad = ["titular", "cónyuge", "conyuge", "compañero", "hijo"]
+            else:
+                modo = "Soltero"
+                prioridad = ["titular", "padre", "madre", "hijo"]
 
-        for titular_id, grupo in df.groupby(identificacion_col):
-            try:
-                parentescos_normalizados: Dict[int, str] = {}
-                for indice in grupo.index:
-                    parentescos_normalizados[indice] = normalizar_texto(
-                        grupo.at[indice, parentesco_col]
-                    )
+            max_beneficiarios = 3
+            aplican: List[int] = []
 
-                parentescos_lista = list(parentescos_normalizados.values())
-                tiene_padres = any(valor in {"padre", "madre"} for valor in parentescos_lista)
-                tiene_conyuge = any("conyuge" in valor or "companero" in valor for valor in parentescos_lista)
-                tiene_hijos = any(valor.startswith("hij") for valor in parentescos_lista)
-                tiene_titular = any("titular" in valor for valor in parentescos_lista)
-
-                grupo_texto = ""
-                if grupo_col:
-                    grupo_valor = grupo.iloc[0].get(grupo_col, "")
-                    grupo_texto = normalizar_texto(grupo_valor)
-
-                if "soltero" in grupo_texto and tiene_conyuge:
-                    df.loc[grupo.index, "Transicion_Soltero_Casado"] = True
-                    prioridad = [
-                        "titular",
-                        "conyuge",
-                        "companero",
-                        "companero(a)",
-                        "hijo",
-                        "padre",
-                        "madre",
-                    ]
-                    modo_grupo = "Transición Soltero → Casado"
-                elif any(palabra in grupo_texto for palabra in ["casado", "conyuge", "companero"]):
-                    prioridad = [
-                        "titular",
-                        "conyuge",
-                        "companero",
-                        "companero(a)",
-                        "hijo",
-                    ]
-                    modo_grupo = "Casado"
-                else:
-                    prioridad = ["titular", "padre", "madre", "hijo"]
-                    modo_grupo = "Soltero"
-
-                seleccionados: List[int] = []
-                for preferencia in prioridad:
-                    preferencia_norm = normalizar_texto(preferencia)
-                    for indice, parentesco_valor in parentescos_normalizados.items():
-                        if indice in seleccionados:
-                            continue
-
-                        coincide = False
-                        if preferencia_norm == "hijo":
-                            coincide = parentesco_valor.startswith("hij")
-                        elif preferencia_norm == "companero":
-                            coincide = "companero" in parentesco_valor and "(a)" not in parentesco_valor
-                        elif preferencia_norm == "companero(a)":
-                            coincide = "companero" in parentesco_valor
-                        else:
-                            coincide = preferencia_norm in parentesco_valor
-
-                        if not coincide:
-                            continue
-
-                        if len(seleccionados) < max_beneficiarios:
-                            seleccionados.append(indice)
-                        else:
-                            if not df.at[indice, "Motivo_No_Beneficio"]:
-                                df.at[indice, "Motivo_No_Beneficio"] = (
-                                    f"💔 Excede el máximo de {max_beneficiarios} beneficiarios para grupo '{modo_grupo}'. "
-                                    f"Prioridad actual: {preferencia}. Titular incluido en el conteo."
-                                )
-
-                df.loc[seleccionados, "Aplica_Beneficio"] = True
-
-                for indice, fila in grupo.iterrows():
-                    clave = (
-                        normalizar_clave(fila.get(tipo_poliza_col, "")),
-                        str(fila.get(plan_col, "")).strip(),
-                    )
-                    valor_beneficio = valores_dict.get(clave, 0.0)
-
-                    if indice in seleccionados:
-                        if valor_beneficio > 0:
-                            df.at[indice, "Aplica_Beneficio"] = True
-                            df.at[indice, "Porcentaje_Beneficio"] = valor_beneficio
-                        else:
-                            df.at[indice, "Aplica_Beneficio"] = False
-                            df.at[indice, "Porcentaje_Beneficio"] = 0.0
-                            if not df.at[indice, "Motivo_No_Beneficio"]:
-                                df.at[indice, "Motivo_No_Beneficio"] = (
-                                    "⚠️ No existe valor definido en la tabla de beneficios para este plan o tipo de póliza."
-                                )
+            for p in prioridad:
+                subset = grupo[grupo["Parentesco"].str.lower().str.contains(p)]
+                for idx in subset.index:
+                    if len(aplican) < max_beneficiarios:
+                        aplican.append(idx)
                     else:
-                        df.at[indice, "Aplica_Beneficio"] = False
-                        df.at[indice, "Porcentaje_Beneficio"] = 0.0
-                        if not df.at[indice, "Motivo_No_Beneficio"]:
-                            parentesco_actual = parentescos_normalizados.get(indice, "")
-                            if modo_grupo == "Casado" and parentesco_actual in {"padre", "madre"}:
-                                df.at[indice, "Motivo_No_Beneficio"] = (
-                                    "💔 No aplica porque el grupo es Casado y el parentesco es Padre/Madre."
-                                )
-                            elif modo_grupo == "Soltero" and any(
-                                palabra in parentesco_actual for palabra in ["conyuge", "companero"]
-                            ):
-                                df.at[indice, "Motivo_No_Beneficio"] = (
-                                    "💔 Grupo indica Soltero, pero se detectó Cónyuge/Compañero(a). Se considera transición."
-                                )
-                            else:
-                                df.at[indice, "Motivo_No_Beneficio"] = (
-                                    f"💔 No aplica por regla de grupo '{modo_grupo}'. Parentesco fuera de prioridad."
-                                )
+                        df.at[idx, "Motivo_No_Beneficio"] = (
+                            f"💔 Excede el máximo de {max_beneficiarios} beneficiarios del grupo '{modo}'."
+                        )
 
-                if df.loc[grupo.index, "Transicion_Soltero_Casado"].any():
-                    for indice in grupo.index:
-                        parentesco_valor = parentescos_normalizados.get(indice, "")
-                        if parentesco_valor in {"padre", "madre"}:
-                            df.at[indice, "Aplica_Beneficio"] = False
-                            df.at[indice, "Porcentaje_Beneficio"] = 0.0
-                            df.at[indice, "Motivo_No_Beneficio"] = "💡 Transición a casado: padres desplazados 👪"
+            for idx, row in grupo.iterrows():
+                parentesco = str(row.get("Parentesco", "")).lower()
+                tipo_poliza = str(row.get("TIPO POLIZA", "")).strip().lower()
+                plan = str(row.get("PLAN", "")).strip()
 
-            except Exception as exc:
-                print(f"Error aplicando política de beneficios para titular {titular_id}: {exc}")
+                valor_beneficio = valores_dict.get((tipo_poliza, plan), 0)
+
+                if idx in aplican and valor_beneficio > 0:
+                    df.at[idx, "Aplica_Beneficio"] = True
+                    df.at[idx, "Porcentaje_Beneficio"] = valor_beneficio
+                    df.at[idx, "Motivo_No_Beneficio"] = f"✅ Aplica según grupo '{modo}' y plan {plan}."
+                else:
+                    if df.at[idx, "Motivo_No_Beneficio"] == "":
+                        if valor_beneficio == 0:
+                            df.at[idx, "Motivo_No_Beneficio"] = (
+                                "⚠️ No existe valor configurado en la tabla de beneficios para este plan/tipo de póliza."
+                            )
+                        elif "casado" in grupo_texto and any(p in parentesco for p in ["padre", "madre"]):
+                            df.at[idx, "Motivo_No_Beneficio"] = (
+                                "💔 No aplica porque el grupo es Casado y el parentesco es Padre/Madre."
+                            )
+                        elif "soltero" in grupo_texto and any(p in parentesco for p in ["cónyuge", "conyuge", "compañero"]):
+                            df.at[idx, "Motivo_No_Beneficio"] = (
+                                "💔 Grupo indica Soltero, pero se detectó Cónyuge/Compañero(a). Se considera transición."
+                            )
+                        else:
+                            df.at[idx, "Motivo_No_Beneficio"] = (
+                                f"💔 No aplica por regla del grupo '{modo}'. Parentesco fuera de prioridad."
+                            )
 
         return df
 
