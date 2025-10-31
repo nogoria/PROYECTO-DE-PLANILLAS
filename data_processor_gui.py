@@ -860,6 +860,8 @@ class DataProcessorApp(tk.Tk):
             if exclusions and column in result.columns:
                 result = result[~result[column].isin(exclusions)]
 
+        result = self.filtrar_beneficiarios(result)
+
         def normalize_string(value: Any) -> str:
             if value is None:
                 return ""
@@ -924,6 +926,102 @@ class DataProcessorApp(tk.Tk):
 
         result.reset_index(drop=True, inplace=True)
         return result
+
+    def filtrar_beneficiarios(self, df: "pd.DataFrame") -> "pd.DataFrame":
+        """Marca beneficiarios elegibles respetando transiciones de estado civil."""
+
+        if pd is None or df.empty:
+            if "Elegible_Beneficio" not in df.columns:
+                df["Elegible_Beneficio"] = False
+            if "Transicion_Estado_Civil" not in df.columns:
+                df["Transicion_Estado_Civil"] = ""
+            return df
+
+        work_df = df
+        if "Elegible_Beneficio" not in work_df.columns:
+            work_df["Elegible_Beneficio"] = False
+        else:
+            work_df["Elegible_Beneficio"] = work_df["Elegible_Beneficio"].fillna(False)
+
+        if "Transicion_Estado_Civil" not in work_df.columns:
+            work_df["Transicion_Estado_Civil"] = ""
+        else:
+            work_df["Transicion_Estado_Civil"] = work_df["Transicion_Estado_Civil"].fillna("")
+
+        def normalize_column_name(name: Any) -> str:
+            base = str(name).strip().casefold()
+            return base.replace(" ", "_")
+
+        column_map: Dict[str, Optional[str]] = {
+            "identificacion_titular": None,
+            "estado_civil": None,
+            "parentesco": None,
+        }
+
+        for column in work_df.columns:
+            normalized = normalize_column_name(column)
+            if normalized in column_map and column_map[normalized] is None:
+                column_map[normalized] = column
+
+        titular_column = column_map["identificacion_titular"]
+        estado_column = column_map["estado_civil"]
+        parentesco_column = column_map["parentesco"]
+
+        if not all([titular_column, estado_column, parentesco_column]):
+            return work_df
+
+        for titular, grupo in work_df.groupby(titular_column):
+            try:
+                estado_valor = grupo.iloc[0][estado_column]
+                if pd.isna(estado_valor):  # type: ignore[attr-defined]
+                    estado_civil = ""
+                else:
+                    estado_civil = str(estado_valor).strip().lower()
+
+                parentescos_series = grupo[parentesco_column]
+                if pd.isna(parentescos_series).all():  # type: ignore[attr-defined]
+                    parentescos_series = parentescos_series.fillna("")
+
+                tiene_padres = parentescos_series.isin(["Padre", "Madre"]).any()
+
+                if (
+                    ("casado" in estado_civil or "compañero" in estado_civil)
+                    and tiene_padres
+                ):
+                    work_df.loc[grupo.index, "Transicion_Estado_Civil"] = "Soltero→Casado"
+
+                if "casado" in estado_civil or "compañero" in estado_civil:
+                    parentescos_validos = ["Cónyuge", "Compañero(a)", "Hijo", "Hija"]
+                    parentescos_excluidos = ["Padre", "Madre"]
+                else:
+                    parentescos_validos = ["Padre", "Madre", "Hijo", "Hija"]
+                    parentescos_excluidos = []
+
+                beneficiarios_validos = grupo[
+                    grupo[parentesco_column].isin(parentescos_validos)
+                ].copy()
+
+                if len(beneficiarios_validos) > 3:
+                    if "casado" in estado_civil:
+                        prioridad = ["Cónyuge", "Compañero(a)", "Hijo", "Hija"]
+                    else:
+                        prioridad = ["Padre", "Madre", "Hijo", "Hija"]
+
+                    beneficiarios_validos["prioridad"] = beneficiarios_validos[
+                        parentesco_column
+                    ].apply(lambda p: prioridad.index(p) if p in prioridad else 99)
+                    beneficiarios_validos = beneficiarios_validos.sort_values("prioridad").head(3)
+
+                work_df.loc[beneficiarios_validos.index, "Elegible_Beneficio"] = True
+
+                if parentescos_excluidos:
+                    padres = grupo[grupo[parentesco_column].isin(parentescos_excluidos)].index
+                    work_df.loc[padres, "Elegible_Beneficio"] = False
+
+            except Exception as exc:
+                print(f"Error procesando titular {titular}: {exc}")
+
+        return work_df
 
     def asignar_prima_neta(self, df: "pd.DataFrame") -> "pd.DataFrame":
         """
