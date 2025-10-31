@@ -1,5 +1,6 @@
 import json
 import os
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, TYPE_CHECKING, Tuple
 
@@ -918,7 +919,24 @@ class DataProcessorApp(tk.Tk):
                     descuento_pos[idx] = valor
 
         result = self.asignar_prima_neta(result)
-        result = self.asignar_porcentaje_beneficio(result)
+
+        if pd is not None:
+            tabla_valores = pd.DataFrame(
+                {
+                    "TIPO POLIZA": [
+                        "Salud Sura Clasica",
+                        "Salud Sura Clasica",
+                        "Sura Evoluciona",
+                        "Salud Sura Global",
+                        "SALUD PARA TODOS",
+                        "SALUD PARA TODOS",
+                        "SALUD PARA TODOS",
+                    ],
+                    "PLAN": ["266", "267", "817", "307", "13", "11", "12"],
+                    "VALOR": [89000, 89000, 71000, 89000, 57000, 57000, 57000],
+                }
+            )
+            result = self.aplicar_politica_beneficios(result, tabla_valores)
 
         if "Descuento POS" in result.columns:
             result.loc[:, "Descuento POS"] = descuento_pos
@@ -1121,78 +1139,178 @@ class DataProcessorApp(tk.Tk):
 
         return df
 
-    def asignar_porcentaje_beneficio(self, df: "pd.DataFrame") -> "pd.DataFrame":
-        """
-        Asigna valores de "Porcentaje_Beneficio" según políticas definidas y justifica los casos sin beneficio.
-        """
+    def aplicar_politica_beneficios(
+        self, df: "pd.DataFrame", tabla_valores: "pd.DataFrame"
+    ) -> "pd.DataFrame":
+        """Aplica políticas de beneficio basadas en combinaciones de plan y póliza."""
 
-        if pd is None or df.empty:
-            if "Porcentaje_Beneficio" not in df.columns:
-                df["Porcentaje_Beneficio"] = 0
-            if "Motivo_No_Beneficio" not in df.columns:
-                df["Motivo_No_Beneficio"] = ""
-            return df
-
-        politicas = [
-            {"tipo": "Salud Sura Clasica", "plan": "266", "valor": 89000},
-            {"tipo": "Salud Sura Clasica", "plan": "267", "valor": 89000},
-            {"tipo": "Sura Evoluciona", "plan": "817", "valor": 71000},
-            {"tipo": "Salud Sura Global", "plan": "307", "valor": 89000},
-            {"tipo": "SALUD PARA TODOS", "plan": "13", "valor": 57000},
-            {"tipo": "SALUD PARA TODOS", "plan": "11", "valor": 57000},
-            {"tipo": "SALUD PARA TODOS", "plan": "12", "valor": 57000},
+        columnas_objetivo = [
+            ("Aplica_Beneficio", False),
+            ("Motivo_No_Beneficio", ""),
+            ("Transicion_Soltero_Casado", False),
+            ("Porcentaje_Beneficio", 0.0),
         ]
 
-        if "Porcentaje_Beneficio" not in df.columns:
-            df["Porcentaje_Beneficio"] = 0
-        else:
-            df["Porcentaje_Beneficio"] = df["Porcentaje_Beneficio"].fillna(0)
+        if pd is None or df.empty:
+            for columna, valor in columnas_objetivo:
+                if columna not in df.columns:
+                    df[columna] = valor
+            return df
 
-        if "Motivo_No_Beneficio" not in df.columns:
-            df["Motivo_No_Beneficio"] = ""
-        else:
-            df["Motivo_No_Beneficio"] = df["Motivo_No_Beneficio"].fillna("")
-
-        for i, row in df.iterrows():
-            try:
-                tipo_poliza = str(row.get("Tipo de Poliza", "")).strip()
-                plan_codigo = str(row.get("Plan", "")).strip()
-                elegible = bool(row.get("Elegible_Beneficio", False))
-                transicion = str(row.get("Transicion_Estado_Civil", "")).strip()
-
-                if not elegible:
-                    df.at[i, "Porcentaje_Beneficio"] = 0
-                    df.at[i, "Motivo_No_Beneficio"] = "❌ No cumple políticas del grupo familiar 💔"
-                    continue
-
-                match = next(
-                    (
-                        politica
-                        for politica in politicas
-                        if politica["tipo"].lower() == tipo_poliza.lower()
-                        and politica["plan"] == plan_codigo
-                    ),
-                    None,
-                )
-
-                if match:
-                    df.at[i, "Porcentaje_Beneficio"] = match["valor"]
-                    df.at[i, "Motivo_No_Beneficio"] = ""
+        if tabla_valores is None or tabla_valores.empty:
+            for columna, valor in columnas_objetivo:
+                if columna not in df.columns:
+                    df[columna] = valor
                 else:
-                    df.at[i, "Porcentaje_Beneficio"] = 0
-                    df.at[i, "Motivo_No_Beneficio"] = "⚠️ Plan o tipo de póliza sin coincidencia 🧐"
-                    continue
+                    if columna == "Motivo_No_Beneficio":
+                        df[columna] = df[columna].fillna("")
+                    else:
+                        df[columna] = df[columna].fillna(valor)
+            return df
 
-                parentesco_valor = str(row.get("Parentesco", "")).strip().lower()
-                if transicion and parentesco_valor in {"padre", "madre"}:
-                    df.at[i, "Porcentaje_Beneficio"] = 0
-                    df.at[i, "Motivo_No_Beneficio"] = "💡 Transición a casado: padres desplazados 👪"
+        def normalizar_texto(valor: Any) -> str:
+            texto = str(valor or "").strip().lower()
+            texto = unicodedata.normalize("NFKD", texto)
+            texto = "".join(ch for ch in texto if not unicodedata.combining(ch))
+            return texto
+
+        def normalizar_clave(valor: Any) -> str:
+            return normalizar_texto(valor).replace(" ", "_")
+
+        def encontrar_columna(
+            columnas: List[str], candidatos: List[str]
+        ) -> Optional[str]:
+            objetivos = {normalizar_clave(obj) for obj in candidatos}
+            for columna in columnas:
+                if normalizar_clave(columna) in objetivos:
+                    return columna
+            return None
+
+        identificacion_col = encontrar_columna(df.columns.tolist(), ["identificacion_titular"])
+        parentesco_col = encontrar_columna(df.columns.tolist(), ["parentesco"])
+        plan_col = encontrar_columna(df.columns.tolist(), ["plan"])
+        tipo_poliza_col = encontrar_columna(
+            df.columns.tolist(),
+            ["tipo_de_poliza", "tipo_poliza", "tipo de poliza", "tipo poliza"],
+        )
+        grupo_col = encontrar_columna(df.columns.tolist(), ["grupo"])
+
+        for columna, valor in columnas_objetivo:
+            if columna not in df.columns:
+                df[columna] = valor
+            else:
+                if columna == "Motivo_No_Beneficio":
+                    df[columna] = df[columna].fillna("")
+                else:
+                    df[columna] = df[columna].fillna(valor)
+
+        if identificacion_col is None or parentesco_col is None or plan_col is None or tipo_poliza_col is None:
+            return df
+
+        tipo_ref_col = encontrar_columna(
+            tabla_valores.columns.tolist(),
+            ["tipo_poliza", "tipo de poliza", "tipo_poliza", "tipo poliza"],
+        )
+        plan_ref_col = encontrar_columna(tabla_valores.columns.tolist(), ["plan"])
+        valor_ref_col = encontrar_columna(tabla_valores.columns.tolist(), ["valor", "porcentaje", "monto"])
+
+        if tipo_ref_col is None or plan_ref_col is None or valor_ref_col is None:
+            return df
+
+        valores_dict: Dict[Tuple[str, str], float] = {}
+        for _, fila in tabla_valores.iterrows():
+            tipo_val = normalizar_clave(fila.get(tipo_ref_col, ""))
+            plan_val = str(fila.get(plan_ref_col, "")).strip()
+            valor = _parse_numeric(fila.get(valor_ref_col))
+            if not tipo_val or not plan_val or valor is None:
+                continue
+            valores_dict[(tipo_val, plan_val)] = valor
+
+        if not valores_dict:
+            return df
+
+        for titular_id, grupo in df.groupby(identificacion_col):
+            try:
+                parentescos_normalizados = [
+                    normalizar_texto(valor)
+                    for valor in grupo[parentesco_col].astype(str).tolist()
+                ]
+
+                tiene_padres = any(valor in {"padre", "madre"} for valor in parentescos_normalizados)
+                tiene_conyuge = any("conyuge" in valor or "companero" in valor for valor in parentescos_normalizados)
+
+                grupo_texto = ""
+                if grupo_col and grupo_col in grupo.columns:
+                    grupo_texto = normalizar_texto(grupo.iloc[0][grupo_col])
+
+                if "soltero" in grupo_texto and tiene_conyuge:
+                    df.loc[grupo.index, "Transicion_Soltero_Casado"] = True
+                    prioridad = [
+                        "conyuge",
+                        "companero",
+                        "companero(a)",
+                        "hijo",
+                        "hija",
+                        "padre",
+                        "madre",
+                    ]
+                elif any(palabra in grupo_texto for palabra in ["casado", "conyuge", "companero"]):
+                    prioridad = ["conyuge", "companero", "companero(a)", "hijo", "hija"]
+                else:
+                    prioridad = ["padre", "madre", "hijo", "hija"]
+
+                seleccionados: List[int] = []
+                for preferencia in prioridad:
+                    preferencia_normalizada = normalizar_texto(preferencia)
+                    for indice in grupo.index:
+                        valor_norm = normalizar_texto(grupo.at[indice, parentesco_col])
+                        coincidencia = False
+                        if preferencia_normalizada == "hijo":
+                            coincidencia = valor_norm.startswith("hij")
+                        elif preferencia_normalizada == "companero":
+                            coincidencia = "companero" in valor_norm and "(a)" not in valor_norm
+                        elif preferencia_normalizada == "companero(a)":
+                            coincidencia = "companero" in valor_norm
+                        else:
+                            coincidencia = preferencia_normalizada in valor_norm
+
+                        if not coincidencia or indice in seleccionados:
+                            continue
+
+                        if len(seleccionados) < 3:
+                            seleccionados.append(indice)
+                        else:
+                            if not df.at[indice, "Motivo_No_Beneficio"]:
+                                df.at[indice, "Motivo_No_Beneficio"] = "💔 Excede el máximo de beneficiarios (3)"
+
+                df.loc[seleccionados, "Aplica_Beneficio"] = True
+
+                for indice, fila in grupo.iterrows():
+                    clave = (
+                        normalizar_clave(fila.get(tipo_poliza_col, "")),
+                        str(fila.get(plan_col, "")).strip(),
+                    )
+                    valor_beneficio = valores_dict.get(clave, 0.0)
+
+                    if df.at[indice, "Aplica_Beneficio"]:
+                        df.at[indice, "Porcentaje_Beneficio"] = valor_beneficio
+                        if valor_beneficio == 0 and not df.at[indice, "Motivo_No_Beneficio"]:
+                            df.at[indice, "Motivo_No_Beneficio"] = "⚠️ Plan o tipo de póliza sin coincidencia 🧐"
+                    else:
+                        df.at[indice, "Porcentaje_Beneficio"] = 0.0
+                        if not df.at[indice, "Motivo_No_Beneficio"]:
+                            df.at[indice, "Motivo_No_Beneficio"] = "❌ No cumple políticas del grupo familiar 💔"
+
+                if df.loc[grupo.index, "Transicion_Soltero_Casado"].any():
+                    for indice in grupo.index:
+                        parentesco_valor = normalizar_texto(grupo.at[indice, parentesco_col])
+                        if parentesco_valor in {"padre", "madre"}:
+                            df.at[indice, "Aplica_Beneficio"] = False
+                            df.at[indice, "Porcentaje_Beneficio"] = 0.0
+                            df.at[indice, "Motivo_No_Beneficio"] = "💡 Transición a casado: padres desplazados 👪"
 
             except Exception as exc:
-                print(f"Error asignando porcentaje de beneficio en fila {i}: {exc}")
-                df.at[i, "Porcentaje_Beneficio"] = 0
-                if not df.at[i, "Motivo_No_Beneficio"]:
-                    df.at[i, "Motivo_No_Beneficio"] = "⚠️ Error al evaluar beneficios"
+                print(f"Error aplicando política de beneficios para titular {titular_id}: {exc}")
 
         return df
 
